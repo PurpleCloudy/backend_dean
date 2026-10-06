@@ -1,0 +1,12 @@
+.git
+.venv
+.env*
+.local
+.nelson
+__pycache__
+**/__pycache__
+.pytest_cache
+build
+tests
+sources/*.zip
+*.egg-info

@@ -1,0 +1,14 @@
+# Host bindings are local-only and exist solely for independent verification.
+services:
+  postgres:
+    ports: ['127.0.0.1:55433:5432']
+  s3:
+    ports: ['127.0.0.1:59000:9000']
+  qdrant:
+    ports: ['127.0.0.1:56333:6333']
+  clamav:
+    ports: ['127.0.0.1:53310:3310']
+  providers:
+    ports: ['127.0.0.1:58231:8231']
+  agent:
+    ports: ['127.0.0.1:58001:8001']

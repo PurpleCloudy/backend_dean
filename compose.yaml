@@ -1,0 +1,134 @@
+name: deanery-local
+x-app: &app
+  image: deanery-backend:local
+  build: .
+  init: true
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  cap_drop: [ALL]
+  networks: [private]
+x-env: &env
+  DATABASE_URL: postgresql://deanery_runtime:${RUNTIME_PASSWORD:?Run scripts/local_config.py}@postgres:5432/deanery_app
+  JOB_DATABASE_URL: postgresql://deanery_jobs:${JOB_PASSWORD:?Set local password}@postgres:5432/deanery_app
+  ACCESS_TOKEN_KEY: ${ACCESS_TOKEN_KEY:?Set signing key}
+  DELEGATION_SECRET: ${DELEGATION_SECRET:?Set delegation secret}
+  DEVELOPMENT: ${DEVELOPMENT:-false}
+  ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-[]}
+  TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-[]}
+  LOGIN_ACCOUNT_LIMIT: ${LOGIN_ACCOUNT_LIMIT:-10}
+  LOGIN_IP_LIMIT: ${LOGIN_IP_LIMIT:-100}
+  LOGIN_WINDOW_SECONDS: ${LOGIN_WINDOW_SECONDS:-300}
+  AGENT_URL: http://agent:8001
+  BACKEND_URL: http://api:8000
+  S3_ENDPOINT_URL: http://s3:9000
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set storage access key}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:?Set storage secret}
+  S3_BUCKET: deanery-private
+  QDRANT_URL: http://qdrant:6333
+  QDRANT_COLLECTION: deanery_documents
+  BGE_URL: ${BGE_URL:?Set an explicit BGE endpoint or select --fixture-providers}
+  CLAMAV_HOST: clamav
+  CLAMAV_PORT: '3310'
+services:
+  postgres:
+    image: postgres:17@sha256:c6222b54873a2fb19591cb06b93ef2825c03cdb680396e3600f24921f340f630
+    environment:
+      POSTGRES_DB: deanery_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set local password}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    networks: [private]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U postgres -d deanery_app']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  s3:
+    image: chrislusf/seaweedfs:4.15
+    command: [server, -dir=/data, -s3, -s3.port=9000, -s3.config=/etc/deanery-s3.json, -volume.max=32, -master.volumeSizeLimitMB=100]
+    volumes: [s3-data:/data, ./.local/s3.json:/etc/deanery-s3.json:ro]
+    networks: [private]
+  qdrant:
+    image: qdrant/qdrant:v1.15.5
+    volumes: [qdrant-data:/qdrant/storage]
+    networks: [private]
+  clamav:
+    image: clamav/clamav:1.4
+    volumes: [clamav-data:/var/lib/clamav]
+    networks: [private]
+    healthcheck:
+      test: [CMD, clamdcheck.sh]
+      interval: 15s
+      timeout: 5s
+      start_period: 180s
+      retries: 30
+  providers:
+    profiles: [verification]
+    image: python:3.12-slim@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
+    command: [python, /fixture/adversarial_providers.py, --host, 0.0.0.0, --port, '8231']
+    volumes: [./tests/adversarial_providers.py:/fixture/adversarial_providers.py:ro]
+    networks: [private]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+  api:
+    <<: *app
+    environment: *env
+    ports: ['127.0.0.1:8000:8000']
+    depends_on:
+      postgres: {condition: service_healthy}
+      s3: {condition: service_started}
+      qdrant: {condition: service_started}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready',timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
+  worker:
+    <<: *app
+    command: [python, -m, deanery_api.worker]
+    environment: *env
+    depends_on:
+      postgres: {condition: service_healthy}
+      clamav: {condition: service_healthy}
+  agent:
+    <<: *app
+    command: [python, -m, uvicorn, integrations.dean_agent_adapter.app:app, --host, 0.0.0.0, --port, '8001']
+    environment:
+      DATABASE_URL: postgresql+psycopg://deanery_upstream:${UPSTREAM_PASSWORD:?Set upstream password}@postgres:5432/deanery_app
+      DELEGATION_SECRET: ${DELEGATION_SECRET:?Set delegation secret}
+      BACKEND_URL: http://api:8000
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:?Set an explicit model endpoint or select --fixture-providers}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set the provider key explicitly}
+      OPENAI_MODEL: ${OPENAI_MODEL:?Set the tool-calling model explicitly}
+      QDRANT_URL: http://qdrant:6333
+      BGE_M3_URL: ${BGE_URL:?Set BGE endpoint explicitly}
+    depends_on:
+      postgres: {condition: service_healthy}
+  migrate:
+    <<: *app
+    restart: 'no'
+    profiles: [tools]
+    command: [python, -m, alembic, -c, migrations/alembic.ini, upgrade, head]
+    environment:
+      <<: *env
+      MIGRATION_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?Set local password}@postgres:5432/deanery_app
+      RUNTIME_PASSWORD: ${RUNTIME_PASSWORD:?Set runtime password}
+      JOB_PASSWORD: ${JOB_PASSWORD:?Set job password}
+      UPSTREAM_PASSWORD: ${UPSTREAM_PASSWORD:?Set upstream password}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:?Set bootstrap password}
+      S3_ADMIN_ACCESS_KEY: ${S3_ADMIN_ACCESS_KEY:?Set storage bootstrap key}
+      S3_ADMIN_SECRET_KEY: ${S3_ADMIN_SECRET_KEY:?Set storage bootstrap secret}
+    depends_on:
+      postgres: {condition: service_healthy}
+volumes:
+  postgres-data:
+  s3-data:
+  qdrant-data:
+  clamav-data:
+networks:
+  private:
+    driver: bridge

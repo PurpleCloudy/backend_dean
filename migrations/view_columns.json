@@ -1,0 +1,1276 @@
+{
+  "v_academic_leaves": {
+    "student_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "reason": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "start_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "end_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "actual_end_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "order_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "return_order_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "returned_on": {
+      "type": "date",
+      "nullable": true
+    },
+    "state": {
+      "type": "text",
+      "nullable": true
+    },
+    "days_left": {
+      "type": "integer",
+      "nullable": true
+    },
+    "leave_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_academic_works": {
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "work_kind": {
+      "type": "text",
+      "nullable": true
+    },
+    "discipline": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "semester": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "topic": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "supervisor": {
+      "type": "text",
+      "nullable": true
+    },
+    "reviewer": {
+      "type": "text",
+      "nullable": true
+    },
+    "order_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "work_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_active_scholarships": {
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "scholarship": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "amount": {
+      "type": "numeric",
+      "nullable": true
+    },
+    "start_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "end_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "order_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "scholarship_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_attendance_stats": {
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "lessons": {
+      "type": "bigint",
+      "nullable": true
+    },
+    "absences": {
+      "type": "bigint",
+      "nullable": true
+    },
+    "attendance_pct": {
+      "type": "numeric",
+      "nullable": true
+    },
+    "student_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_audit": {
+    "audit_id": {
+      "type": "bigint",
+      "nullable": true
+    },
+    "changed_at": {
+      "type": "timestamp with time zone",
+      "nullable": true
+    },
+    "table_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "record_key": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "operation": {
+      "type": "text",
+      "nullable": true
+    },
+    "changed_by": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "agent_request": {
+      "type": "text",
+      "nullable": true
+    },
+    "column_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "old_value": {
+      "type": "text",
+      "nullable": true
+    },
+    "new_value": {
+      "type": "text",
+      "nullable": true
+    },
+    "app_user_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "agent_request_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_curriculum": {
+    "specialty": {
+      "type": "text",
+      "nullable": true
+    },
+    "profile": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "study_form": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "start_year": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "semester": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "discipline": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "kind": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "control_type": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "lecture_hours": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "practice_hours": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "lab_hours": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "self_study_hours": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "total_hours": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "credits": {
+      "type": "numeric",
+      "nullable": true
+    },
+    "item_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_debtors": {
+    "student_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "discipline": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "semester": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "control_type": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "attempts": {
+      "type": "bigint",
+      "nullable": true
+    },
+    "last_result": {
+      "type": "text",
+      "nullable": true
+    }
+  },
+  "v_document_queue": {
+    "request_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "document": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "copies": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "purpose": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "status": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "created_at": {
+      "type": "timestamp with time zone",
+      "nullable": true
+    },
+    "due_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "processed_by": {
+      "type": "text",
+      "nullable": true
+    }
+  },
+  "v_employees": {
+    "employee_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "personnel_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "full_name": {
+      "type": "text",
+      "nullable": true
+    },
+    "position": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "category": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "unit": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "employment_rate": {
+      "type": "numeric",
+      "nullable": true
+    },
+    "hire_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "dismissal_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "phone": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "email": {
+      "type": "character varying",
+      "nullable": true
+    }
+  },
+  "v_expulsion_risk": {
+    "student_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "debts": {
+      "type": "bigint",
+      "nullable": true
+    },
+    "max_attempts": {
+      "type": "bigint",
+      "nullable": true
+    },
+    "disciplines": {
+      "type": "text",
+      "nullable": true
+    },
+    "reason": {
+      "type": "text",
+      "nullable": true
+    }
+  },
+  "v_grade_corrections": {
+    "correction_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "sheet_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "discipline": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "semester": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "stage": {
+      "type": "text",
+      "nullable": true
+    },
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "record_book_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "old_result": {
+      "type": "text",
+      "nullable": true
+    },
+    "new_result": {
+      "type": "text",
+      "nullable": true
+    },
+    "current_result": {
+      "type": "text",
+      "nullable": true
+    },
+    "reason": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "requested_by": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "requested_at": {
+      "type": "timestamp with time zone",
+      "nullable": true
+    },
+    "status": {
+      "type": "text",
+      "nullable": true
+    },
+    "decided_by": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "decided_at": {
+      "type": "timestamp with time zone",
+      "nullable": true
+    },
+    "decision_comment": {
+      "type": "character varying",
+      "nullable": true
+    }
+  },
+  "v_grades": {
+    "student_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "discipline": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "semester": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "stage": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "points": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "mark": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "result": {
+      "type": "text",
+      "nullable": true
+    },
+    "passed": {
+      "type": "boolean",
+      "nullable": true
+    },
+    "sheet_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "sheet_kind": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "exam_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "examiner": {
+      "type": "text",
+      "nullable": true
+    },
+    "grade_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_groups": {
+    "group_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "specialty": {
+      "type": "text",
+      "nullable": true
+    },
+    "profile": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "study_form": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "admission_year": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "course": {
+      "type": "integer",
+      "nullable": true
+    },
+    "current_semester": {
+      "type": "integer",
+      "nullable": true
+    },
+    "curator": {
+      "type": "text",
+      "nullable": true
+    },
+    "headman": {
+      "type": "text",
+      "nullable": true
+    },
+    "active_students": {
+      "type": "bigint",
+      "nullable": true
+    },
+    "budget_students": {
+      "type": "bigint",
+      "nullable": true
+    }
+  },
+  "v_last_result": {
+    "student_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "discipline_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "semester": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "item_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "stage": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "points": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "is_absent": {
+      "type": "boolean",
+      "nullable": true
+    },
+    "sheet_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "exam_date": {
+      "type": "date",
+      "nullable": true
+    }
+  },
+  "v_pending_orders": {
+    "student_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "record_book_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "current_status": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "order_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "order_type_code": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "order_type": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "order_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "due_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "days_left": {
+      "type": "integer",
+      "nullable": true
+    },
+    "new_group": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "reason": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "order_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_performance": {
+    "student_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "semester": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "discipline": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "module_1": {
+      "type": "text",
+      "nullable": true
+    },
+    "module_2": {
+      "type": "text",
+      "nullable": true
+    },
+    "credit": {
+      "type": "text",
+      "nullable": true
+    },
+    "exam": {
+      "type": "text",
+      "nullable": true
+    },
+    "control_type": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "final_result": {
+      "type": "text",
+      "nullable": true
+    },
+    "item_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_practice": {
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "practice": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "semester": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "organization": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "supervisor": {
+      "type": "text",
+      "nullable": true
+    },
+    "org_supervisor": {
+      "type": "text",
+      "nullable": true
+    },
+    "start_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "end_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "order_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "placement_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_schedule": {
+    "term": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "weekday": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "weekday_name": {
+      "type": "text",
+      "nullable": true
+    },
+    "pair_number": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "start_time": {
+      "type": "time without time zone",
+      "nullable": true
+    },
+    "end_time": {
+      "type": "time without time zone",
+      "nullable": true
+    },
+    "week": {
+      "type": "text",
+      "nullable": true
+    },
+    "discipline": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "lesson_type": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "teacher": {
+      "type": "text",
+      "nullable": true
+    },
+    "classroom": {
+      "type": "text",
+      "nullable": true
+    },
+    "subgroup": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "valid_from": {
+      "type": "date",
+      "nullable": true
+    },
+    "valid_to": {
+      "type": "date",
+      "nullable": true
+    },
+    "slot_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_schedule_calendar": {
+    "lesson_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "weekday_name": {
+      "type": "text",
+      "nullable": true
+    },
+    "week_no": {
+      "type": "integer",
+      "nullable": true
+    },
+    "week": {
+      "type": "text",
+      "nullable": true
+    },
+    "pair_number": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "start_time": {
+      "type": "time without time zone",
+      "nullable": true
+    },
+    "end_time": {
+      "type": "time without time zone",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "discipline": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "lesson_type": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "teacher": {
+      "type": "text",
+      "nullable": true
+    },
+    "classroom": {
+      "type": "text",
+      "nullable": true
+    },
+    "subgroup": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "term": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "slot_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_schedule_hours": {
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "discipline": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "lesson_type": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "teacher": {
+      "type": "text",
+      "nullable": true
+    },
+    "planned_hours": {
+      "type": "smallint",
+      "nullable": true
+    },
+    "scheduled_hours": {
+      "type": "bigint",
+      "nullable": true
+    },
+    "assignment_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_student_contacts": {
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "relation": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "contact": {
+      "type": "text",
+      "nullable": true
+    },
+    "phone": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "email": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "is_emergency": {
+      "type": "boolean",
+      "nullable": true
+    },
+    "student_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "contact_person_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_student_orders": {
+    "student_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "record_book_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "order_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "order_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "effective_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "order_type": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "title": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "reason": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "new_group": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "state": {
+      "type": "text",
+      "nullable": true
+    },
+    "applied_at": {
+      "type": "timestamp with time zone",
+      "nullable": true
+    },
+    "order_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_student_rating": {
+    "student_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "avg_points": {
+      "type": "numeric",
+      "nullable": true
+    },
+    "avg_mark": {
+      "type": "numeric",
+      "nullable": true
+    },
+    "excellent_count": {
+      "type": "bigint",
+      "nullable": true
+    },
+    "debts": {
+      "type": "bigint",
+      "nullable": true
+    }
+  },
+  "v_student_summary": {
+    "student_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "student": {
+      "type": "text",
+      "nullable": true
+    },
+    "record_book_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "course": {
+      "type": "integer",
+      "nullable": true
+    },
+    "status": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "funding": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "avg_points": {
+      "type": "numeric",
+      "nullable": true
+    },
+    "debts": {
+      "type": "bigint",
+      "nullable": true
+    },
+    "attendance_pct": {
+      "type": "numeric",
+      "nullable": true
+    },
+    "scholarships": {
+      "type": "text",
+      "nullable": true
+    },
+    "is_headman": {
+      "type": "boolean",
+      "nullable": true
+    },
+    "is_foreign": {
+      "type": "boolean",
+      "nullable": true
+    },
+    "needs_dormitory": {
+      "type": "boolean",
+      "nullable": true
+    },
+    "category": {
+      "type": "character varying",
+      "nullable": true
+    }
+  },
+  "v_students": {
+    "student_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "full_name": {
+      "type": "text",
+      "nullable": true
+    },
+    "gender": {
+      "type": "character",
+      "nullable": true
+    },
+    "birth_date": {
+      "type": "date",
+      "nullable": true
+    },
+    "phone": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "email": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "record_book_number": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "group_name": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "course": {
+      "type": "integer",
+      "nullable": true
+    },
+    "specialty": {
+      "type": "text",
+      "nullable": true
+    },
+    "profile": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "study_form": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "funding": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "status": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "institute": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "enrollment_date": {
+      "type": "date",
+      "nullable": true
+    }
+  },
+  "v_teacher_load": {
+    "teacher": {
+      "type": "text",
+      "nullable": true
+    },
+    "department": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "total_hours": {
+      "type": "bigint",
+      "nullable": true
+    },
+    "groups": {
+      "type": "bigint",
+      "nullable": true
+    },
+    "disciplines": {
+      "type": "bigint",
+      "nullable": true
+    },
+    "employee_id": {
+      "type": "integer",
+      "nullable": true
+    }
+  },
+  "v_teachers": {
+    "employee_id": {
+      "type": "integer",
+      "nullable": true
+    },
+    "full_name": {
+      "type": "text",
+      "nullable": true
+    },
+    "position": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "degree": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "academic_title": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "department": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "institute": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "employment_rate": {
+      "type": "numeric",
+      "nullable": true
+    },
+    "teaching_experience_years": {
+      "type": "integer",
+      "nullable": true
+    },
+    "phone": {
+      "type": "character varying",
+      "nullable": true
+    },
+    "email": {
+      "type": "character varying",
+      "nullable": true
+    }
+  }
+}

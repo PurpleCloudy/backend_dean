@@ -1,0 +1,4 @@
+# Install from the repository root; versions are pinned in one shared lock file.
+-c requirements.lock
+.
+./references/dean-agent

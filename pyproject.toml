@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deanery-backend"
+version = "0.1.0"
+requires-python = ">=3.12,<3.14"
+dependencies = ["fastapi", "uvicorn", "psycopg[binary,pool]", "pydantic-settings", "argon2-cffi", "pyjwt", "alembic", "sqlalchemy", "httpx", "aiobotocore", "procrastinate", "pglast", "pypdf", "python-multipart"]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-asyncio"]
+agent = ["deepagents==0.7.22", "langchain-openai==1.6.7", "qdrant-client==1.19.1"]
+
+[tool.setuptools.packages.find]
+where = ["backend", "."]
+include = ["deanery_api*", "integrations*"]
+
+[tool.setuptools.package-data]
+deanery_api = ["schema.json"]
+"integrations.dean_agent_adapter" = ["THIRD_PARTY_NOTICES.txt"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
