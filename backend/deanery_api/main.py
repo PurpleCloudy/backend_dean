@@ -103,7 +103,7 @@ async def ready():
 async def core_ready():
     async with db.get_pool().connection() as conn:
         row=await(await conn.execute("SELECT version_num FROM alembic_version")).fetchone()
-        if row['version_num']!='0002':
+        if row['version_num']!='0003':
             from .errors import ApiError
             raise ApiError(503,'migration_required','Database migrations required')
     return {'status':'ready','schema':row['version_num']}

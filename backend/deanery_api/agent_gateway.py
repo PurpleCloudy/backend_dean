@@ -7,9 +7,9 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 
@@ -17,12 +17,87 @@ from integrations.dean_agent_adapter.security import sign, verify
 from .auth import require_principal, load_principal
 from .config import get_settings
 from .db import transaction, get_pool
-from .errors import ApiError
+from .errors import ApiError, ErrorEnvelope
 from .schemas import json_value
 from .agent_tools import ProposalSummary
+from .files import get_version, download_file
+from .jobs import ParseQuality
 
 router = APIRouter(tags=['agent'])
 _http = None
+MAX_ATTACHMENTS = 5
+MAX_ATTACHMENT_BYTES = 20_000_000
+MAX_TEXT_CHUNKS = 50
+
+
+class AdapterCapabilities(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    attachments_context_v1: StrictBool
+
+
+class AdapterHealth(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    status: Literal['ready']
+    adapter: Literal['scoped-v1']
+    capabilities: AdapterCapabilities | None = None
+
+
+class AttachmentRef(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    file_id: UUID
+    version_id: UUID
+
+
+class AttachmentMetadata(AttachmentRef):
+    ordinal: int = Field(ge=0, lt=MAX_ATTACHMENTS)
+    title: str
+    source: str
+    filename: str
+    mime: Literal['text/plain', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/csv']
+    byte_size: int
+    sha256: str
+    quality: ParseQuality | None
+    text_available: bool
+
+
+class AttachmentContext(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    backend_run_id: UUID
+    canonical_request_id: int
+    session_id: UUID
+    attachments: list[AttachmentMetadata]
+
+
+class AttachmentChunk(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    ordinal: int
+    page: int | None
+    text: str
+
+
+class AttachmentText(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    version_id: UUID
+    chunks: list[AttachmentChunk]
+    next_offset: int | None
+    quality: ParseQuality | None
+    text_available: bool
+
+
+class AttachmentCapability(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    protocol: Literal['v1'] = 'v1'
+    backend_supported: Literal[True] = True
+    agent_supported: bool
+    agent_status: Literal['ready', 'unavailable']
+    max_attachments: int = MAX_ATTACHMENTS
+    max_total_bytes: int = MAX_ATTACHMENT_BYTES
+    max_text_chunks: int = MAX_TEXT_CHUNKS
+
+
+class CapabilitiesResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    attachment_context: AttachmentCapability
 
 
 async def start_services(app=None):
@@ -40,17 +115,35 @@ async def stop_services(app=None):
     _http = None
 
 
+async def adapter_capabilities():
+    settings = get_settings()
+    if not settings.agent_url or len(settings.delegation_secret) < 32:
+        raise ApiError(503, 'agent_unavailable', 'Агент не настроен')
+    try:
+        async with asyncio.timeout(2):
+            token = sign(settings.delegation_secret, {'user': 1, 'session': str(uuid4()), 'run': str(uuid4())}, 'deanery-health', 30)
+            async with _http.stream('GET', settings.agent_url.rstrip('/')+'/health/scoped', headers={'X-Delegation': token}) as response:
+                response.raise_for_status()
+                raw = bytearray()
+                async for chunk in response.aiter_bytes():
+                    raw.extend(chunk)
+                    if len(raw) > 4096:
+                        raise ValueError('Capability response limit')
+            value = AdapterHealth.model_validate_json(raw)
+            if 'capabilities' in value.model_fields_set and value.capabilities is None:
+                raise ValueError('Malformed capabilities')
+            return bool(value.capabilities and value.capabilities.attachments_context_v1)
+    except (httpx.HTTPError, ValueError, TimeoutError):
+        raise ApiError(503, 'agent_unavailable', 'Возможности агента недоступны') from None
+
+
 async def health():
     settings = get_settings()
     if not settings.agent_url or len(settings.delegation_secret) < 32:
         return {'agent': {'status': 'unconfigured'}}
     try:
+        await adapter_capabilities()
         async with asyncio.timeout(2):
-            token = sign(settings.delegation_secret, {'user': 1, 'session': str(uuid4()), 'run': str(uuid4())}, 'deanery-health', 30)
-            response = await _http.get(settings.agent_url.rstrip('/')+'/health/scoped', headers={'X-Delegation': token})
-            response.raise_for_status()
-            if response.json() != {'status': 'ready', 'adapter': 'scoped-v1'}:
-                raise ValueError('Unsafe upstream')
             response = await _http.get(settings.agent_url.rstrip('/')+'/health')
             response.raise_for_status()
         return {'agent': {'status': 'ready'}}
@@ -62,6 +155,13 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     message: str = Field(min_length=1, max_length=8000)
     session_id: UUID | None = None
+    attachments: list[AttachmentRef] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
+
+    @model_validator(mode='after')
+    def unique_versions(self):
+        if len({item.version_id for item in self.attachments}) != len(self.attachments):
+            raise ApiError(422, 'duplicate_attachment', 'Версия файла указана повторно')
+        return self
 
 
 class ChatResponse(BaseModel):
@@ -71,6 +171,7 @@ class ChatResponse(BaseModel):
     answer: str
     proposals: list[ProposalSummary]
     tools_used: list[Literal['query_deanery', 'propose_sql_change', 'search_regulations']]
+    attachment_context: AttachmentContext | None = None
 
 
 class RunResponse(BaseModel):
@@ -89,12 +190,27 @@ class RecoveryResponse(BaseModel):
     status: Literal['failed']
 
 
-async def reserve(principal, session_id, message):
+async def attachment_metadata(conn, principal, reference, ordinal):
+    metadata, version = await get_version(conn, principal, reference.file_id, reference.version_id, ready=True)
+    available = await (await conn.execute('SELECT EXISTS(SELECT 1 FROM backend.file_chunks WHERE version_id=%s) AS value',
+        (reference.version_id,))).fetchone()
+    quality = ParseQuality.model_validate(version['quality']) if 'ocr_performed' in version['quality'] else None
+    return AttachmentMetadata(file_id=reference.file_id, version_id=reference.version_id, ordinal=ordinal,
+        title=metadata['title'], source=metadata['source'],
+        **{key: version[key] for key in ('filename', 'mime', 'byte_size', 'sha256')},
+        quality=quality, text_available=available['value'])
+
+
+async def reserve(principal, session_id, message, attachments=()):
     settings = get_settings()
     if not settings.agent_url or len(settings.delegation_secret) < 32:
         raise ApiError(503, 'agent_unavailable', 'Агент не настроен')
     run_id = uuid4()
     async with transaction(principal, str(run_id)) as conn:
+        principal = await load_principal(conn, principal.user_id)
+        metadata = [await attachment_metadata(conn, principal, item, ordinal) for ordinal, item in enumerate(attachments)]
+        if sum(item.byte_size for item in metadata) > MAX_ATTACHMENT_BYTES:
+            raise ApiError(413, 'attachments_too_large', 'Суммарный размер вложений превышает 20 МБ')
         # Serialize admission across API workers, accounting for disconnected runs.
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext('deanery-agent-admission'))")
         active = await (await conn.execute("SELECT count(*) AS n FROM backend.agent_runs WHERE status IN ('running','ambiguous')")).fetchone()
@@ -111,9 +227,14 @@ async def reserve(principal, session_id, message):
         active_session = await (await conn.execute("SELECT 1 FROM backend.agent_runs WHERE session_id=%s AND status IN ('running','ambiguous')", (session_id,))).fetchone()
         if active_session:
             raise ApiError(409, 'session_busy', 'Ответ в этом диалоге ещё формируется')
-        await conn.execute('SELECT backend.start_agent_run(%s,%s,%s,%s)',
-            (run_id, session_id, datetime.now(timezone.utc)+timedelta(seconds=settings.agent_timeout_seconds), message))
-    return run_id, session_id
+        canonical = await (await conn.execute('SELECT backend.start_agent_run(%s,%s,%s,%s) AS id',
+            (run_id, session_id, datetime.now(timezone.utc)+timedelta(seconds=settings.agent_timeout_seconds), message))).fetchone()
+        for item in metadata:
+            await conn.execute('INSERT INTO backend.agent_run_attachments(run_id,file_id,version_id,ordinal) VALUES(%s,%s,%s,%s)',
+                (run_id, item.file_id, item.version_id, item.ordinal))
+        context = AttachmentContext(backend_run_id=run_id, canonical_request_id=canonical['id'], session_id=session_id,
+            attachments=metadata).model_dump(mode='json') if metadata else None
+    return run_id, session_id, context
 
 
 async def finish(run_id, status, answer=None):
@@ -124,8 +245,12 @@ async def finish(run_id, status, answer=None):
 
 
 async def upstream_request(request, body, principal, stream):
-    run_id, session_id = await reserve(principal, body.session_id, body.message)
+    if body.attachments and not await adapter_capabilities():
+        raise ApiError(412, 'agent_attachments_unsupported', 'Текущий агент ещё не поддерживает вложения')
+    run_id, session_id, context = await reserve(principal, body.session_id, body.message, body.attachments)
     payload = {'message': body.message, 'session_id': str(session_id)}
+    if body.attachments:
+        payload['attachments'] = [item.model_dump(mode='json') for item in body.attachments]
     raw = json.dumps(payload, separators=(',', ':'), ensure_ascii=False).encode()
     token = sign(get_settings().delegation_secret, {'user': principal.user_id, 'session': str(session_id),
         'run': str(run_id), 'auth_session': str(request.state.session_id), 'body_sha256': hashlib.sha256(raw).hexdigest()},
@@ -137,8 +262,9 @@ async def upstream_request(request, body, principal, stream):
         if response.status_code >= 400:
             await response.aclose()
             await finish(run_id, 'failed')
-            raise ApiError(503 if response.status_code == 503 else 502, 'agent_error', 'Агент не выполнил запрос')
-        return run_id, session_id, response
+            raise ApiError(503 if response.status_code == 503 else 502, 'agent_error', 'Агент не выполнил запрос',
+                {'run_id': str(run_id), 'session_id': str(session_id)} if context is not None else None)
+        return run_id, session_id, response, context
     except (httpx.HTTPError, asyncio.CancelledError) as exc:
         definite = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
         await asyncio.shield(finish(run_id, 'failed' if definite else 'ambiguous'))
@@ -162,9 +288,9 @@ def check_answer(value, session_id):
     return value
 
 
-@router.post('/agent/chat', responses={200: {'model': ChatResponse}})
+@router.post('/agent/chat', responses={200: {'model': ChatResponse}, 412: {'model': ErrorEnvelope, 'description': 'Installed agent cannot consume attachment context; nothing admitted.'}})
 async def chat(body: ChatRequest, request: Request, principal=Depends(require_principal)):
-    run_id, session_id, response = await upstream_request(request, body, principal, False)
+    run_id, session_id, response, context = await upstream_request(request, body, principal, False)
     try:
         raw = bytearray()
         async with asyncio.timeout(get_settings().agent_timeout_seconds):
@@ -174,6 +300,8 @@ async def chat(body: ChatRequest, request: Request, principal=Depends(require_pr
                     raise ValueError('Agent response size limit')
         result = check_answer(json.loads(raw), session_id)
         await finish(run_id, 'done', result['answer'])
+        if context is not None:
+            result['attachment_context'] = context
         return result
     except (ValueError, ApiError, TimeoutError, httpx.HTTPError):
         await finish(run_id, 'ambiguous')
@@ -184,14 +312,16 @@ async def chat(body: ChatRequest, request: Request, principal=Depends(require_pr
 
 
 @router.post('/agent/chat/stream', response_class=StreamingResponse,
-    responses={200: {'description': 'UTF-8 SSE frames: status, session, tool_call, tool_result, done or error. Each data line is JSON; done has the ChatResponse shape. An error may include run_id/session_id when the upstream outcome is unknown.',
-        'content': {'text/event-stream': {'schema': {'type': 'string'}, 'example': 'event: session\ndata: {"session_id":"00000000-0000-0000-0000-000000000001"}\n\n'}}}})
+    responses={200: {'description': 'UTF-8 SSE frames: status, session, tool_call, tool_result, done or error. Each data line is JSON; done has the ChatResponse shape. Attached requests add attachment_context to session and done. Its backend_run_id is distinct from the upstream run_id. An error may include backend run_id/session_id when the upstream outcome is unknown.',
+        'content': {'text/event-stream': {'schema': {'type': 'string'}, 'example': 'event: session\ndata: {"session_id":"00000000-0000-0000-0000-000000000001"}\n\n'}}},
+        412: {'model': ErrorEnvelope, 'description': 'Installed agent cannot consume attachment context; nothing admitted.'}})
 async def chat_stream(body: ChatRequest, request: Request, principal=Depends(require_principal)):
-    run_id, session_id, response = await upstream_request(request, body, principal, True)
+    run_id, session_id, response, context = await upstream_request(request, body, principal, True)
     if not response.headers.get('content-type', '').startswith('text/event-stream'):
         await response.aclose()
         await finish(run_id, 'ambiguous')
-        raise ApiError(502, 'agent_protocol_error', 'Неверный поток агента')
+        raise ApiError(502, 'agent_protocol_error', 'Неверный поток агента',
+            {'run_id': str(run_id), 'session_id': str(session_id)} if context is not None else None)
 
     async def events():
         terminal = False
@@ -221,8 +351,12 @@ async def chat_stream(body: ChatRequest, request: Request, principal=Depends(req
                             await finish(run_id, 'done', value['answer'])
                         if event == 'error':
                             value = {'type': 'AgentError', 'message': 'Агент не ответил'}
+                            if context is not None:
+                                value.update(run_id=str(run_id), session_id=str(session_id))
                             terminal = True
                             await finish(run_id, 'failed')
+                        if context is not None and event in {'session', 'done'}:
+                            value['attachment_context'] = context
                         yield 'event: ' + event + '\ndata: ' + json.dumps(value, ensure_ascii=False) + '\n\n'
                         if terminal:
                             return
@@ -269,6 +403,79 @@ async def delegated(request, audience, permit_finished=False):
                 await conn.execute('UPDATE backend.agent_runs SET upstream_run_id=%s WHERE id=%s', (upstream_run, run['id']))
             principal = await load_principal(conn, claims['user']) if not permit_finished else None
     return claims, principal
+
+
+@router.get('/agent/capabilities', responses={200: {'model': CapabilitiesResponse}})
+async def capabilities(principal=Depends(require_principal)):
+    try:
+        supported = await adapter_capabilities()
+        status = 'ready'
+    except ApiError:
+        supported, status = False, 'unavailable'
+    return CapabilitiesResponse(attachment_context=AttachmentCapability(
+        agent_supported=supported, agent_status=status))
+
+
+async def run_attachment_context(conn, principal, run_id):
+    run = await (await conn.execute('SELECT id,session_id,canonical_request_id FROM backend.agent_runs WHERE id=%s AND user_id=%s',
+        (run_id, principal.user_id))).fetchone()
+    if not run:
+        raise ApiError(404, 'run_not_found', 'Запуск не найден')
+    rows = await (await conn.execute('SELECT file_id,version_id,ordinal FROM backend.agent_run_attachments WHERE run_id=%s ORDER BY ordinal',
+        (run_id,))).fetchall()
+    metadata = [await attachment_metadata(conn, principal, AttachmentRef(file_id=row['file_id'], version_id=row['version_id']), row['ordinal']) for row in rows]
+    return AttachmentContext(backend_run_id=run['id'], canonical_request_id=run['canonical_request_id'],
+        session_id=run['session_id'], attachments=metadata)
+
+
+@router.get('/agent/runs/{run_id}/attachments', responses={200: {'model': AttachmentContext}},
+    description='Owner-only attachment metadata for the canonical backend_run_id, not the upstream run_id. Every read rechecks current file access and readiness.')
+async def attachments_for_run(run_id: UUID, principal=Depends(require_principal)):
+    async with transaction(principal, readonly=True) as conn:
+        principal = await load_principal(conn, principal.user_id)
+        return await run_attachment_context(conn, principal, run_id)
+
+
+@router.get('/internal/agent/attachments', include_in_schema=False)
+async def delegated_attachments(request: Request):
+    claims, principal = await delegated(request, 'deanery-attachments')
+    async with transaction(principal, claims['run'], readonly=True) as conn:
+        principal = await load_principal(conn, principal.user_id)
+        return await run_attachment_context(conn, principal, UUID(claims['run']))
+
+
+async def bound_attachment(conn, principal, run_id, version_id):
+    row = await (await conn.execute('SELECT a.file_id,a.ordinal FROM backend.agent_run_attachments a '
+        'JOIN backend.agent_runs r ON r.id=a.run_id WHERE a.run_id=%s AND a.version_id=%s AND r.user_id=%s',
+        (run_id, version_id, principal.user_id))).fetchone()
+    if not row:
+        raise ApiError(404, 'attachment_not_found', 'Вложение этого запроса не найдено')
+    return AttachmentRef(file_id=row['file_id'], version_id=version_id), row['ordinal']
+
+
+@router.get('/internal/agent/attachments/{version_id}/text', include_in_schema=False)
+async def delegated_attachment_text(version_id: UUID, request: Request,
+    offset: int = Query(default=0, ge=0, le=10000), limit: int = Query(default=20, ge=1, le=MAX_TEXT_CHUNKS)):
+    claims, principal = await delegated(request, 'deanery-attachments')
+    async with transaction(principal, claims['run'], readonly=True) as conn:
+        principal = await load_principal(conn, principal.user_id)
+        reference, ordinal = await bound_attachment(conn, principal, UUID(claims['run']), version_id)
+        metadata = await attachment_metadata(conn, principal, reference, ordinal)
+        rows = await (await conn.execute('SELECT ordinal,page,content AS text FROM backend.file_chunks '
+            'WHERE version_id=%s ORDER BY ordinal LIMIT %s OFFSET %s', (version_id, limit+1, offset))).fetchall()
+        return AttachmentText(version_id=version_id, chunks=rows[:limit], next_offset=offset+limit if len(rows)>limit else None,
+            quality=metadata.quality, text_available=metadata.text_available)
+
+
+@router.get('/internal/agent/attachments/{version_id}/download', response_class=StreamingResponse, include_in_schema=False)
+async def delegated_attachment_download(version_id: UUID, request: Request):
+    claims, principal = await delegated(request, 'deanery-attachments')
+    async with transaction(principal, claims['run'], readonly=True) as conn:
+        principal = await load_principal(conn, principal.user_id)
+        reference, _ = await bound_attachment(conn, principal, UUID(claims['run']), version_id)
+    # Reuse the normal private download: current ACL/ready, server-owned S3 key,
+    # bounded chunk streaming and existing safe download headers. No signed URL.
+    return await download_file(reference.file_id, reference.version_id, principal)
 
 
 @router.post('/internal/agent/claim', include_in_schema=False)

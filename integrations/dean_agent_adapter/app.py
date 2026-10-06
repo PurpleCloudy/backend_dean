@@ -148,7 +148,8 @@ class DelegationMiddleware:
                 verify(SECRET, dict(scope['headers']).get(b'x-delegation', b'').decode('ascii'), 'deanery-health')
             except (ValueError, UnicodeError):
                 return await JSONResponse({'detail': 'Delegation required'}, status_code=401)(scope, receive, send)
-            return await JSONResponse({'status': 'ready', 'adapter': 'scoped-v1'})(scope, receive, send)
+            return await JSONResponse({'status': 'ready', 'adapter': 'scoped-v1',
+                'capabilities': {'attachments_context_v1': False}})(scope, receive, send)
         if scope['path'] not in {'/chat', '/chat/stream'} or scope['method'] != 'POST':
             return await JSONResponse({'detail': 'Route disabled by scoped adapter'}, status_code=404)(scope, receive, send)
         raw = bytearray()
@@ -171,6 +172,11 @@ class DelegationMiddleware:
             body = json.loads(raw)
             if headers.get(b'x-actor-id', b'').decode() != f"user:{claims['user']}" or body.get('session_id') != claims['session'] or hashlib.sha256(raw).hexdigest() != claims['body_sha256']:
                 raise ValueError('Identity or body mismatch')
+            # The original ChatRequest ignores unknown fields. Never let that
+            # silently discard attachments while the installed agent lacks support.
+            if body.get('attachments') not in (None, []):
+                return await JSONResponse({'error': {'code': 'agent_attachments_unsupported',
+                    'message': 'Installed agent cannot consume attachments'}}, status_code=412)(scope, receive, send)
             claimed = await async_http.post(BACKEND+'/api/v1/internal/agent/claim', headers={'X-Delegation': token})
             if claimed.status_code != 200:
                 raise ValueError('Delegation rejected')
