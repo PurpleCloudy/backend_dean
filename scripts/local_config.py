@@ -12,7 +12,7 @@ root = Path(__file__).resolve().parents[1]
 target = root / '.env.local'
 values = {
     'DEVELOPMENT': 'true',
-    'ALLOWED_ORIGINS': '["http://localhost:5173","http://127.0.0.1:5173","http://localhost:8000","http://127.0.0.1:8000"]',
+    'ALLOWED_ORIGINS': '["*"]',
     'POSTGRES_PASSWORD': secrets.token_urlsafe(32),
     'RUNTIME_PASSWORD': secrets.token_urlsafe(32),
     'UPSTREAM_PASSWORD': secrets.token_urlsafe(32),

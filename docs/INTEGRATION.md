@@ -6,7 +6,7 @@ Current deployment migration head is `0006`; readiness requires it. The conversa
 
 ## Login and session lifecycle
 
-Send `POST /auth/login` with JSON `{ "login": "admin", "password": "…" }`, an allowed `Origin`, and `credentials: "include"`. The response contains `access_token`, `token_type`, `expires_in`, `csrf_token`. Keep the bearer access token and CSRF token in memory. The refresh token is an HttpOnly SameSite=Strict cookie restricted to `/api/v1/auth`; production mode also requires Secure.
+Send `POST /auth/login` with JSON `{ "login": "admin", "password": "…" }`, an `Origin` accepted by the configuration, and `credentials: "include"`. The response contains `access_token`, `token_type`, `expires_in`, `csrf_token`. Keep the bearer access token and CSRF token in memory. The refresh token is an HttpOnly SameSite=Strict cookie restricted to `/api/v1/auth`; production mode also requires Secure.
 
 Authenticated calls use `Authorization: Bearer …`. Refresh uses `POST /auth/refresh`, `credentials: "include"`, the same allowed Origin, and `X-CSRF-Token`. Replace the access token with the returned value. Serialize refresh calls across your React client: reusing the previous refresh cookie revokes the whole session family. Logout is `POST /auth/logout`; all sessions can be revoked with `/auth/logout-all`.
 
@@ -103,3 +103,7 @@ Only attachment runs trim model-facing old history to newest whole user/assistan
 Images and scanned PDF pages are decoded/rendered only in a short-lived Linux subprocess with768MB address-space,30CPU-second,35wall-second and12MB output bounds. Input files remain limited to10MB; images to25MP, one frame and2048px output; PDFs to500 source pages and the first10 visual pages, with explicit visual_truncated. The signed adapter disables all direct multipart/upload routes of the upstream service. Arbitrary URLs and prepared browser image blocks are never accepted.
 
 The vendored runtime exactly matches upstream commit `d92bf5fbfc5b37c3236a6454aeffa5374fe88b11`; only the external integration adapter applies these controls. Pillow12.3.0 declares MIT-CMU; PyMuPDF1.28.2 declares AGPL-3.0 or Artifex commercial licensing. The upstream MIT notice does not relicense those dependencies; commercial distribution requires a separate review of the applicable dependency terms.
+
+## Browser origin configuration
+
+`ALLOWED_ORIGINS=["*"]` permits every browser Origin, including credentialed login/refresh. CORS reflects the requesting Origin and sends `Vary: Origin`, rather than returning a wildcard with credentials. Missing Origin on login/refresh is still rejected; CSRF, authentication and role checks remain active. Explicit origin lists retain their existing restriction. Existing environment values override the new permissive default: replace an old list with `["*"]` and recreate the API container. Permissive CORS allows any website to initiate browser requests; it does not grant authenticated access by itself.

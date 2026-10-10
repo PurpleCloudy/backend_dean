@@ -107,7 +107,7 @@ class LoginTokens(AccessTokens):
 
 def check_origin(request):
     origin = request.headers.get("origin")
-    if origin not in get_settings().allowed_origins:
+    if not origin or ("*" not in get_settings().allowed_origins and origin not in get_settings().allowed_origins):
         raise ApiError(403, "invalid_origin", "Allowed Origin header required")
 
 

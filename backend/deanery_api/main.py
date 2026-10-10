@@ -62,7 +62,7 @@ async def lifespan(app):
 
 app=FastAPI(title='Deanery API',version='1.0.0',lifespan=lifespan,responses=common_error_responses)
 install_handlers(app)
-app.add_middleware(CORSMiddleware,allow_origins=get_settings().allowed_origins,allow_credentials=True,allow_methods=['GET','POST','PATCH','DELETE'],allow_headers=['Authorization','Content-Type','X-CSRF-Token','Idempotency-Key'],expose_headers=['X-Request-ID','Content-Disposition'])
+app.add_middleware(CORSMiddleware,allow_origins=get_settings().allowed_origins,allow_origin_regex=".*" if "*" in get_settings().allowed_origins else None,allow_credentials=True,allow_methods=['GET','POST','PATCH','DELETE'],allow_headers=['Authorization','Content-Type','X-CSRF-Token','Idempotency-Key'],expose_headers=['X-Request-ID','Content-Disposition'])
 app.add_middleware(BodyLimit)
 
 

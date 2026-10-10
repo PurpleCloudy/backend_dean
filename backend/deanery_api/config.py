@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     access_token_key: str = Field(min_length=32)
     access_ttl_seconds: int = Field(default=900, ge=30, le=3600)
     refresh_ttl_seconds: int = Field(default=2592000, ge=60, le=7776000)
-    allowed_origins: list[str] = ["http://localhost:5173"]
+    allowed_origins: list[str] = ["*"]
     development: bool = False
     trusted_proxy_ips: list[str] = []
     login_account_limit: int = Field(default=10, ge=1, le=1000)
@@ -43,9 +43,9 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def secure_origins(self):
-        if self.pool_max_size < self.pool_min_size or "*" in self.allowed_origins:
-            raise ValueError("Invalid pool limits or wildcard origin")
-        if not self.development and any(not x.startswith("https://") for x in self.allowed_origins):
+        if self.pool_max_size < self.pool_min_size:
+            raise ValueError("Invalid pool limits")
+        if not self.development and any(x != "*" and not x.startswith("https://") for x in self.allowed_origins):
             raise ValueError("HTTPS origins required outside explicit development mode")
         for address in self.trusted_proxy_ips: ip_network(address,strict=False)
         return self
