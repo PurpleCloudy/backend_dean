@@ -68,7 +68,8 @@ async def process_file(job, principal):
                 (chunk['id'], version_id, chunk['ordinal'], chunk['page'], chunk['content']))
     await progress(job['id'], 45)
     await set_version(principal, file_id, version_id, 'indexing', parsed['quality'])
-    await storage.ensure_collection()
+    if chunks:
+        await storage.ensure_collection()
     await storage.delete_index(version_id)
     for start in range(0, len(chunks), 8):
         batch = chunks[start:start+8]

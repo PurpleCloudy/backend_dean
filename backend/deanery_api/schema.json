@@ -3871,8 +3871,7 @@
         "update": [
           "admin",
           "director",
-          "dean_staff",
-          "student"
+          "dean_staff"
         ]
       }
     },

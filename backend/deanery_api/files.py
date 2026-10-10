@@ -7,7 +7,7 @@ from typing import Literal
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Form, Header, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from psycopg.types.json import Jsonb
@@ -68,7 +68,7 @@ class FileVersionResponse(BaseModel):
     id: UUID
     version: int = Field(ge=1)
     filename: str
-    mime: Literal['text/plain', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/csv']
+    mime: Literal['text/plain', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/csv', 'image/png', 'image/jpeg', 'image/webp']
     byte_size: int = Field(ge=1)
     sha256: str = Field(pattern='^[0-9a-f]{64}$')
     state: Literal['quarantined', 'scanning', 'parsing', 'indexing', 'ready', 'rejected', 'failed']
@@ -93,6 +93,24 @@ class FileResponse(BaseModel):
 
 class UploadResponse(jobs.FileResult):
     job: jobs.JobResponse
+
+
+class FileListItem(BaseModel):
+    id: UUID
+    title: str
+    source: str
+    purpose: Literal['attachment', 'regulation', 'export']
+    active_version_id: UUID | None
+    created_at: datetime
+    latest_version: FileVersionResponse | None
+
+
+class FileListResponse(BaseModel):
+    items: list[FileListItem]
+    limit: int
+    offset: int
+    next_offset: int | None
+    has_more: bool
 
 
 async def check_association(conn, principal, association):
@@ -264,6 +282,43 @@ async def upload_version(file_id: UUID, file: UploadFile = File(), idempotency_k
         metadata['purpose'], metadata['association'], metadata['institute_id'], idempotency_key, file_id)
 
 
+@router.get('/files', response_model=FileListResponse,
+    description='Paged ACL-filtered catalog. offset/next_offset continue a bounded candidate scan, not a count of visible files. An empty page may have has_more=true; follow next_offset. No inaccessible file metadata or total count is returned.')
+async def list_files(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0, le=1000000),
+                     purpose: Literal['attachment', 'regulation', 'export'] | None = None,
+                     state: Literal['quarantined', 'scanning', 'parsing', 'indexing', 'ready', 'rejected', 'failed'] | None = None,
+                     title: str | None = Query(None, max_length=100), principal=Depends(require_principal)):
+    items, consumed = [], 0
+    try:
+        async with asyncio.timeout(10):
+            async with transaction(principal, readonly=True) as conn:
+                admin = 'admin' in principal.roles
+                candidates = await (await conn.execute('''SELECT f.id FROM backend.files f
+                    LEFT JOIN LATERAL (SELECT state FROM backend.file_versions WHERE file_id=f.id ORDER BY version DESC LIMIT 1) v ON true
+                    WHERE (%s OR f.institute_id IS NULL OR f.institute_id=ANY(%s))
+                    AND (f.owner_id=%s OR %s OR f.association IS NOT NULL OR f.purpose='regulation')
+                    AND (%s::text IS NULL OR f.purpose=%s) AND (%s::text IS NULL OR v.state=%s)
+                    AND (%s::text IS NULL OR strpos(lower(f.title),lower(%s))>0)
+                    ORDER BY f.created_at DESC,f.id DESC LIMIT 251 OFFSET %s''',
+                    (admin, list(principal.institute_ids), principal.user_id, admin, purpose, purpose, state, state, title, title, offset))).fetchall()
+                for candidate in candidates[:250]:
+                    consumed += 1
+                    try:
+                        metadata = await get_file(conn, principal, candidate['id'])
+                    except ApiError as error:
+                        if error.status in (403, 404):
+                            continue
+                        raise
+                    version = await (await conn.execute('SELECT id,version,filename,mime,byte_size,sha256,state,quality,error_code,created_at FROM backend.file_versions WHERE file_id=%s ORDER BY version DESC LIMIT 1', (metadata['id'],))).fetchone()
+                    items.append({k: metadata[k] for k in ('id', 'title', 'source', 'purpose', 'active_version_id', 'created_at')} | {'latest_version': version})
+                    if len(items) == limit:
+                        break
+    except TimeoutError:
+        raise ApiError(503, 'catalog_timeout', 'Каталог не успел проверить права; сузьте фильтры') from None
+    more = consumed < len(candidates)
+    return {'items': items, 'limit': limit, 'offset': offset, 'next_offset': offset+consumed if more else None, 'has_more': more}
+
+
 @router.get('/files/{file_id}', responses={200: {'model': FileResponse}})
 async def file_status(file_id: UUID, principal=Depends(require_principal)):
     async with transaction(principal) as conn:
@@ -275,7 +330,7 @@ async def file_status(file_id: UUID, principal=Depends(require_principal)):
 @router.get('/files/{file_id}/versions/{version_id}/download', response_class=StreamingResponse,
     responses={200: {'description': 'Private original bytes of a ready immutable version.',
         'content': {mime: {'schema': {'type': 'string', 'format': 'binary'}} for mime in
-            ('text/plain', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/csv')},
+            ('text/plain', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/csv', 'image/png', 'image/jpeg', 'image/webp')},
         'headers': {'Content-Disposition': {'schema': {'type': 'string'}}, 'Content-Length': {'schema': {'type': 'integer'}}, 'ETag': {'schema': {'type': 'string'}}}}})
 async def download_file(file_id: UUID, version_id: UUID, principal=Depends(require_principal)):
     async with transaction(principal) as conn:

@@ -77,7 +77,7 @@ async def correlation(request,call_next):
 
 
 for module in (auth,resources,workflows,reporting): app.include_router(module.router,prefix='/api/v1')
-for name in ('agent_gateway','agent_tools','files','jobs'):
+for name in ('agent_gateway','agent_tools','files','jobs','olap'):
     try: module=importlib.import_module('.'+name,__package__)
     except ModuleNotFoundError as exc:
         if exc.name != __package__+'.'+name: raise
@@ -103,7 +103,7 @@ async def ready():
 async def core_ready():
     async with db.get_pool().connection() as conn:
         row=await(await conn.execute("SELECT version_num FROM alembic_version")).fetchone()
-        if row['version_num']!='0003':
+        if row['version_num']!='0006':
             from .errors import ApiError
             raise ApiError(503,'migration_required','Database migrations required')
     return {'status':'ready','schema':row['version_num']}

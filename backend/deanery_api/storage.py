@@ -27,7 +27,8 @@ _s3 = None
 _http = None
 MIMES = {'.pdf': 'application/pdf', '.txt': 'text/plain',
          '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-         '.csv': 'text/csv'}
+         '.csv': 'text/csv', '.png': 'image/png', '.jpg': 'image/jpeg',
+         '.jpeg': 'image/jpeg', '.webp': 'image/webp'}
 MAX_TEXT = 2_000_000
 
 
@@ -102,12 +103,19 @@ def validate_document(filename, mime, data, allow_csv=False):
     if not filename or len(filename) > 255 or any(c in filename for c in '/\\') or '..' in filename or any(ord(c) < 32 for c in filename):
         raise ApiError(422, 'invalid_filename', 'Недопустимое имя файла')
     extension = PurePosixPath(filename).suffix.lower()
-    allowed = set(MIMES) if allow_csv else set(MIMES) - {'.csv'}
+    allowed = set(MIMES)
     if extension not in allowed or mime.split(';')[0].strip().lower() != MIMES[extension]:
-        raise ApiError(415, 'unsupported_type', 'Разрешены PDF, DOCX и UTF-8 TXT с соответствующим MIME')
+        raise ApiError(415, 'unsupported_type', 'Разрешены PDF, DOCX, TXT, CSV, PNG, JPEG и WEBP с соответствующим MIME')
     if not data:
         raise ApiError(422, 'empty_file', 'Файл пуст')
-    if extension == '.pdf':
+    if MIMES[extension].startswith('image/'):
+        # Full decoding belongs to the resource-limited worker after antivirus.
+        matches = {'.png': data.startswith(b'\x89PNG\r\n\x1a\n'),
+                   '.jpg': data.startswith(b'\xff\xd8\xff'), '.jpeg': data.startswith(b'\xff\xd8\xff'),
+                   '.webp': data[:4] == b'RIFF' and data[8:12] == b'WEBP'}
+        if not matches[extension]:
+            raise ApiError(422, 'invalid_image', 'Содержимое изображения не соответствует типу')
+    elif extension == '.pdf':
         if not data.startswith(b'%PDF-') or b'%%EOF' not in data[-2048:]:
             raise ApiError(422, 'invalid_pdf', 'Неверная сигнатура PDF')
     elif extension == '.docx':
@@ -205,6 +213,11 @@ def parse_document(filename, data):
     extension = PurePosixPath(filename).suffix.lower()
     quality = {'ocr_performed': False, 'page_numbers': extension == '.pdf',
                'images_not_extracted': False, 'text_verified': False}
+    if MIMES.get(extension, '').startswith('image/'):
+        from dean_agent.attachments import image_block
+        image_block(data, MIMES[extension])
+        quality.update(images_not_extracted=True, incomplete_extraction=True, text_available=False)
+        return {'chunks': [], 'quality': quality}
     if extension == '.pdf':
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(data), strict=True)
@@ -239,9 +252,10 @@ def parse_document(filename, data):
     for page, content in pages:
         content = ' '.join(content.split())
         chunks.extend({'page': page, 'content': content[start:start+1200]} for start in range(0, len(content), 1200))
-    if not chunks:
+    if not chunks and extension != '.pdf':
         raise ValueError('no_text_ocr_required')
     quality['incomplete_extraction'] = quality['images_not_extracted']
+    quality['text_available'] = bool(chunks)
     return {'chunks': chunks, 'quality': quality}
 
 
@@ -255,7 +269,7 @@ async def parse_bounded(filename, data):
             input=data, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=35, check=False)
         output = process.stdout
         if process.returncode or len(output) > MAX_TEXT * 8:
-            raise ApiError(422, 'parse_failed', 'Не удалось извлечь текст; сканам требуется OCR')
+            raise ApiError(422, 'parse_failed', 'Не удалось безопасно обработать документ')
         return json.loads(output)
     except subprocess.TimeoutExpired as exc:
         raise ApiError(422, 'parse_limit', 'Превышен предел обработки документа') from exc
@@ -355,4 +369,19 @@ if __name__ == '__main__':
     raw = sys.stdin.buffer.read(10_000_001)
     if len(raw) > 10_000_000:
         raise ValueError('Input size limit')
-    sys.stdout.write(json.dumps(parse_document(sys.argv[1], raw), ensure_ascii=True))
+    if sys.argv[1] == '--visual':
+        from dean_agent.attachments import image_block, pdf_images
+        mime = sys.argv[2]
+        if mime == 'application/pdf':
+            blocks, pages = pdf_images(raw)
+        elif mime in {'image/png', 'image/jpeg', 'image/webp'}:
+            blocks, pages = [image_block(raw, mime)], 1
+        else:
+            raise ValueError('Unsupported visual type')
+        result = {'blocks': blocks, 'total_pages': pages}
+    else:
+        result = parse_document(sys.argv[1], raw)
+    output = json.dumps(result, ensure_ascii=True)
+    if len(output) > 12_000_000:
+        raise ValueError('Parser output size limit')
+    sys.stdout.write(output)

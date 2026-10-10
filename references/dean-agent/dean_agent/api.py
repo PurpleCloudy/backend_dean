@@ -12,11 +12,12 @@ from xml.etree import ElementTree
 import httpx
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pypdf import PdfReader
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from dean_agent.attachments import AttachmentError, MAX_BYTES, MAX_FILE_BYTES, MAX_FILES, prepare_upload
 from dean_agent.agent import ChatSessionError, ask_agent
 from dean_agent.config import settings
 from dean_agent.db import SessionLocal, engine
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     message: str = Field(min_length=1, max_length=8000)
     session_id: uuid.UUID | None = None
 
@@ -76,12 +78,11 @@ def vector_health() -> dict:
     return {"status": "ok", "qdrant": "local", "bge_m3": "remote via SSH tunnel"}
 
 
-@app.post("/chat")
-def chat(body: ChatRequest, x_actor_id: str = Header(min_length=1, max_length=128)) -> dict:
+def _chat(body: ChatRequest, x_actor_id: str, attachments=None) -> dict:
     if settings.openai_model == "your-tool-calling-model":
         raise HTTPException(503, "Настройте OPENAI_MODEL в .env")
     try:
-        return ask_agent(body.message, x_actor_id, body.session_id)
+        return ask_agent(body.message, x_actor_id, body.session_id, **({"attachments": attachments} if attachments else {}))
     except ChatSessionError as exc:
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:
@@ -90,8 +91,7 @@ def chat(body: ChatRequest, x_actor_id: str = Header(min_length=1, max_length=12
         raise HTTPException(502, f"Агент не ответил: {type(exc).__name__}") from exc
 
 
-@app.post("/chat/stream")
-def chat_stream(body: ChatRequest, x_actor_id: str = Header(min_length=1, max_length=128)) -> StreamingResponse:
+def _chat_stream(body: ChatRequest, x_actor_id: str, attachments=None) -> StreamingResponse:
     """Server-sent events: status, session, tool_call, tool_result, done/error."""
     if settings.openai_model == "your-tool-calling-model":
         raise HTTPException(503, "Настройте OPENAI_MODEL в .env")
@@ -105,7 +105,7 @@ def chat_stream(body: ChatRequest, x_actor_id: str = Header(min_length=1, max_le
 
         def run() -> None:
             try:
-                result = ask_agent(body.message, x_actor_id, body.session_id, trace_callback=emit)
+                result = ask_agent(body.message, x_actor_id, body.session_id, trace_callback=emit, **({"attachments": attachments} if attachments else {}))
                 emit("done", result)
             except ChatSessionError as exc:
                 emit("error", {"type": type(exc).__name__, "message": str(exc)})
@@ -126,6 +126,53 @@ def chat_stream(body: ChatRequest, x_actor_id: str = Header(min_length=1, max_le
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/chat")
+def chat(body: ChatRequest, x_actor_id: str = Header(min_length=1, max_length=128)) -> dict:
+    return _chat(body, x_actor_id)
+
+
+@app.post("/chat/stream")
+def chat_stream(body: ChatRequest, x_actor_id: str = Header(min_length=1, max_length=128)) -> StreamingResponse:
+    return _chat_stream(body, x_actor_id)
+
+
+async def prepare_files(files: list[UploadFile]) -> list[dict]:
+    from starlette.concurrency import run_in_threadpool
+    result, size = [], 0
+    try:
+        if not 1 <= len(files) <= MAX_FILES:
+            raise HTTPException(422, "Нужно от 1 до 5 файлов")
+        for file in files:
+            data = await file.read(MAX_FILE_BYTES + 1)
+            size += len(data)
+            if len(data) > MAX_FILE_BYTES or size > MAX_BYTES:
+                raise HTTPException(413, "До 10 МБ на файл и до 20 МБ на запрос")
+            result.append(await run_in_threadpool(prepare_upload, file.filename or "document", data, file.content_type or ""))
+    except AttachmentError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    finally:
+        for file in files:
+            await file.close()
+    return result
+
+
+@app.post("/chat/files")
+async def chat_files(message: str = Form(min_length=1, max_length=8000),
+                     files: list[UploadFile] = File(), session_id: uuid.UUID | None = Form(default=None),
+                     x_actor_id: str = Header(min_length=1, max_length=128)) -> dict:
+    from starlette.concurrency import run_in_threadpool
+    attachments = await prepare_files(files)
+    return await run_in_threadpool(_chat, ChatRequest(message=message, session_id=session_id), x_actor_id, attachments)
+
+
+@app.post("/chat/files/stream")
+async def chat_files_stream(message: str = Form(min_length=1, max_length=8000),
+                            files: list[UploadFile] = File(), session_id: uuid.UUID | None = Form(default=None),
+                            x_actor_id: str = Header(min_length=1, max_length=128)) -> StreamingResponse:
+    attachments = await prepare_files(files)
+    return _chat_stream(ChatRequest(message=message, session_id=session_id), x_actor_id, attachments)
 
 
 @app.get("/proposals/{proposal_id}")

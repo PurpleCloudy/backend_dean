@@ -10,3 +10,4 @@ build
 tests
 sources/*.zip
 *.egg-info
+.gstack

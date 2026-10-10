@@ -32,7 +32,7 @@ def api():
     db=psycopg.connect(os.environ['TEST_DATABASE_URL'],row_factory=dict_row,autocommit=True)
     db.execute('SET search_path=deanery,backend,public')
     db.execute("SET TIME ZONE 'Europe/Moscow'")
-    assert db.execute('SELECT version_num FROM alembic_version').fetchone()['version_num']=='0002'
+    assert db.execute('SELECT version_num FROM alembic_version').fetchone()['version_num']=='0006'
     client=httpx.Client(base_url=os.environ['BASE_URL'],timeout=35,trust_env=False)
     headers={}
     for role in ('ADMIN','STAFF','DIRECTOR','TEACHER'):

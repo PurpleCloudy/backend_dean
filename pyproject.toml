@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "deanery-backend"
 version = "0.1.0"
 requires-python = ">=3.12,<3.14"
-dependencies = ["fastapi", "uvicorn", "psycopg[binary,pool]", "pydantic-settings", "argon2-cffi", "pyjwt", "alembic", "sqlalchemy", "httpx", "aiobotocore", "procrastinate", "pglast", "pypdf", "python-multipart"]
+dependencies = ["fastapi", "uvicorn", "psycopg[binary,pool]", "pydantic-settings", "argon2-cffi", "pyjwt", "alembic", "sqlalchemy", "httpx", "aiobotocore", "procrastinate", "pglast", "pypdf", "python-multipart", "Pillow", "PyMuPDF"]
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-asyncio"]

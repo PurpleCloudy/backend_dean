@@ -7,9 +7,10 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from psycopg import Error as DatabaseError
 from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 
@@ -19,7 +20,7 @@ from .config import get_settings
 from .db import transaction, get_pool
 from .errors import ApiError, ErrorEnvelope
 from .schemas import json_value
-from .agent_tools import ProposalSummary
+from .agent_tools import ProposalSummary, ProposalResponse, proposal_row
 from .files import get_version, download_file
 from .jobs import ParseQuality
 
@@ -28,11 +29,17 @@ _http = None
 MAX_ATTACHMENTS = 5
 MAX_ATTACHMENT_BYTES = 20_000_000
 MAX_TEXT_CHUNKS = 50
+ATTACHED_MESSAGE_CHARS = 2000
+TEXT_MIMES = ['text/plain', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/csv']
+IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp']
+AgentToolName = Literal['query_deanery', 'propose_sql_change', 'search_regulations', 'read_attachment_text']
 
 
 class AdapterCapabilities(BaseModel):
     model_config = ConfigDict(extra='forbid')
     attachments_context_v1: StrictBool
+    attachments_vision_v1: StrictBool = False
+    model: str | None = Field(default=None, max_length=200)
 
 
 class AdapterHealth(BaseModel):
@@ -53,7 +60,7 @@ class AttachmentMetadata(AttachmentRef):
     title: str
     source: str
     filename: str
-    mime: Literal['text/plain', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/csv']
+    mime: Literal['text/plain', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/csv', 'image/png', 'image/jpeg', 'image/webp']
     byte_size: int
     sha256: str
     quality: ParseQuality | None
@@ -93,6 +100,15 @@ class AttachmentCapability(BaseModel):
     max_attachments: int = MAX_ATTACHMENTS
     max_total_bytes: int = MAX_ATTACHMENT_BYTES
     max_text_chunks: int = MAX_TEXT_CHUNKS
+    vision_supported: bool = False
+    model: str | None = None
+    accepted_mime_types: list[str] = Field(default_factory=list)
+    upload_supported_mime_types: list[str] = Field(default_factory=lambda: TEXT_MIMES + IMAGE_MIMES)
+    max_file_bytes: int = 10_000_000
+    max_message_chars: int = ATTACHED_MESSAGE_CHARS
+    max_visual_pages: int = 10
+    max_initial_text_chunks_per_file: int = 1
+    max_tool_text_chunks: int = 2
 
 
 class CapabilitiesResponse(BaseModel):
@@ -132,7 +148,10 @@ async def adapter_capabilities():
             value = AdapterHealth.model_validate_json(raw)
             if 'capabilities' in value.model_fields_set and value.capabilities is None:
                 raise ValueError('Malformed capabilities')
-            return bool(value.capabilities and value.capabilities.attachments_context_v1)
+            profile = value.capabilities or AdapterCapabilities(attachments_context_v1=False)
+            if profile.attachments_vision_v1 and (not profile.attachments_context_v1 or not profile.model):
+                raise ValueError('Visual profile needs a model and attachment support')
+            return profile
     except (httpx.HTTPError, ValueError, TimeoutError):
         raise ApiError(503, 'agent_unavailable', 'Возможности агента недоступны') from None
 
@@ -159,8 +178,12 @@ class ChatRequest(BaseModel):
 
     @model_validator(mode='after')
     def unique_versions(self):
+        if not self.message.strip():
+            raise ApiError(422, 'message_required', 'Введите сообщение')
         if len({item.version_id for item in self.attachments}) != len(self.attachments):
             raise ApiError(422, 'duplicate_attachment', 'Версия файла указана повторно')
+        if self.attachments and len(self.message) > ATTACHED_MESSAGE_CHARS:
+            raise ApiError(422, 'attachment_message_too_long', 'Сообщение с вложениями ограничено 2000 символами')
         return self
 
 
@@ -170,7 +193,7 @@ class ChatResponse(BaseModel):
     session_id: UUID
     answer: str
     proposals: list[ProposalSummary]
-    tools_used: list[Literal['query_deanery', 'propose_sql_change', 'search_regulations']]
+    tools_used: list[AgentToolName]
     attachment_context: AttachmentContext | None = None
 
 
@@ -190,6 +213,170 @@ class RecoveryResponse(BaseModel):
     status: Literal['failed']
 
 
+class SessionSummary(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    id: UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    preview: str
+    busy: bool
+
+
+class SessionList(BaseModel):
+    items: list[SessionSummary]
+    next_offset: int | None
+
+
+class HistoryMessage(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    id: str
+    role: Literal['user', 'assistant', 'error']
+    content: str
+    created_at: datetime
+    run_id: UUID | None
+    status: Literal['running', 'done', 'failed', 'ambiguous'] | None
+    request_id: UUID | None
+    attachments: list[AttachmentMetadata] = Field(default_factory=list)
+    unavailable_attachment_count: int = 0
+    proposals: list[ProposalResponse] = Field(default_factory=list)
+    unavailable_proposal_count: int = 0
+    tools_used: list[AgentToolName] = Field(default_factory=list)
+
+
+class SessionHistory(SessionSummary):
+    messages: list[HistoryMessage]
+    next_offset: int | None
+
+
+class RenameSession(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    title: str = Field(min_length=1, max_length=160)
+
+
+SESSION_SUMMARY_SQL = """
+SELECT s.id,coalesce(s.title,left(coalesce(first_run.request_text,first_message.content,'Новый диалог'),80)) AS title,
+ s.created_at,greatest(s.created_at,last_run.updated_at,last_message.created_at) AS updated_at,
+ left(coalesce(last_run.response_text,last_run.request_text,last_message.content,''),240) AS preview,
+ EXISTS(SELECT 1 FROM backend.agent_runs r WHERE r.session_id=s.id AND r.status IN('running','ambiguous')) AS busy
+FROM public.chat_sessions s
+LEFT JOIN LATERAL (
+ SELECT q.request_text FROM backend.agent_runs r JOIN deanery.agent_request q ON q.agent_request_id=r.canonical_request_id
+ WHERE r.session_id=s.id AND r.user_id=%(user_id)s ORDER BY r.created_at,r.id LIMIT 1
+) first_run ON true
+LEFT JOIN LATERAL (
+ SELECT q.request_text,q.response_text,greatest(r.created_at,r.completed_at) AS updated_at
+ FROM backend.agent_runs r JOIN deanery.agent_request q ON q.agent_request_id=r.canonical_request_id
+ WHERE r.session_id=s.id AND r.user_id=%(user_id)s ORDER BY r.created_at DESC,r.id DESC LIMIT 1
+) last_run ON true
+LEFT JOIN LATERAL (SELECT content FROM public.chat_messages WHERE session_id=s.id AND role='user' ORDER BY id LIMIT 1) first_message ON true
+LEFT JOIN LATERAL (SELECT content,created_at FROM public.chat_messages WHERE session_id=s.id ORDER BY id DESC LIMIT 1) last_message ON true
+WHERE s.actor_id=%(actor_id)s AND s.deleted_at IS NULL
+"""
+
+
+async def owned_session(conn, principal, session_id, lock=False):
+    row = await (await conn.execute('SELECT id FROM public.chat_sessions WHERE id=%s AND actor_id=%s AND deleted_at IS NULL'
+        + (' FOR UPDATE' if lock else ''), (session_id, f'user:{principal.user_id}'))).fetchone()
+    if row is None:
+        raise ApiError(404, 'session_not_found', 'Диалог не найден')
+
+
+async def session_summary(conn, principal, session_id):
+    row = await (await conn.execute(SESSION_SUMMARY_SQL + ' AND s.id=%(session_id)s',
+        {'user_id': principal.user_id, 'actor_id': f'user:{principal.user_id}', 'session_id': session_id})).fetchone()
+    if row is None:
+        raise ApiError(404, 'session_not_found', 'Диалог не найден')
+    return row
+
+
+@router.get('/agent/sessions', response_model=SessionList)
+async def list_sessions(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0, le=1000000),
+                        principal=Depends(require_principal)):
+    async with transaction(principal, readonly=True) as conn:
+        rows = await (await conn.execute(SESSION_SUMMARY_SQL + ' ORDER BY updated_at DESC,s.id DESC LIMIT %(limit)s OFFSET %(offset)s',
+            {'user_id': principal.user_id, 'actor_id': f'user:{principal.user_id}', 'limit': limit+1, 'offset': offset})).fetchall()
+        return {'items': rows[:limit], 'next_offset': offset+limit if len(rows)>limit else None}
+
+
+@router.get('/agent/sessions/{session_id}', response_model=SessionHistory)
+async def session_history(session_id: UUID, limit: int = Query(100, ge=1, le=200),
+                          offset: int = Query(0, ge=0, le=1000000), principal=Depends(require_principal)):
+    # Proposal visibility uses the existing review helper, including its rollback-only row locks.
+    async with transaction(principal) as conn:
+        summary = await session_summary(conn, principal, session_id)
+        rows = await (await conn.execute("""
+WITH managed AS (
+ SELECT r.*,q.request_text,q.response_text FROM backend.agent_runs r
+ JOIN deanery.agent_request q ON q.agent_request_id=r.canonical_request_id
+ WHERE r.session_id=%(session_id)s AND r.user_id=%(user_id)s
+), messages AS (
+ SELECT 'run:'||id||':user' AS id,'user' AS role,request_text AS content,created_at,
+  id AS run_id,status,created_at AS turn_at,id::text AS turn_key,0 AS position FROM managed
+ UNION ALL
+ SELECT 'run:'||id||':reply',CASE WHEN status='done' THEN 'assistant' ELSE 'error' END,
+  CASE status WHEN 'done' THEN response_text WHEN 'failed' THEN 'Агент не выполнил запрос.'
+   ELSE 'Ответ не получен; выполнение может продолжаться. Не отправляйте запрос повторно.' END,
+  coalesce(completed_at,created_at),id,status,created_at,id::text,1 FROM managed WHERE status<>'running'
+ UNION ALL
+ SELECT 'legacy:'||m.id,m.role,m.content,m.created_at,NULL,NULL,m.created_at,lpad(m.id::text,20,'0'),0
+ FROM public.chat_messages m WHERE m.session_id=%(session_id)s AND m.role IN('user','assistant')
+ AND m.created_at < coalesce((SELECT min(created_at) FROM managed),'infinity'::timestamptz)
+)
+SELECT id,role,content,created_at,run_id,status,run_id AS request_id FROM messages
+ORDER BY turn_at,turn_key,position LIMIT %(limit)s OFFSET %(offset)s
+""", {'session_id': session_id, 'user_id': principal.user_id, 'limit': limit+1, 'offset': offset})).fetchall()
+        messages = [HistoryMessage(**row) for row in rows[:limit]]
+        for message in messages:
+            if message.run_id is None:
+                continue
+            if message.role == 'user':
+                refs = await (await conn.execute('SELECT file_id,version_id,ordinal FROM backend.agent_run_attachments WHERE run_id=%s ORDER BY ordinal',
+                    (message.run_id,))).fetchall()
+                for ref in refs:
+                    try:
+                        message.attachments.append(await attachment_metadata(conn, principal,
+                            AttachmentRef(file_id=ref['file_id'], version_id=ref['version_id']), ref['ordinal']))
+                    except ApiError as exc:
+                        if exc.status not in (403, 404, 409):
+                            raise
+                        message.unavailable_attachment_count += 1
+            else:
+                run = await (await conn.execute('SELECT tools_used,upstream_run_id FROM backend.agent_runs WHERE id=%s', (message.run_id,))).fetchone()
+                message.tools_used = run['tools_used'] or []
+                proposals = await (await conn.execute('SELECT id FROM public.sql_change_proposals WHERE session_id=%s AND owner_id=%s '
+                    'AND agent_run_id IN (%s,%s) ORDER BY created_at,id',
+                    (session_id, principal.user_id, str(message.run_id), str(run['upstream_run_id'])))).fetchall()
+                for proposal in proposals:
+                    try:
+                        row, _ = await proposal_row(conn, principal, proposal['id'])
+                        message.proposals.append(ProposalResponse(**{key: row[key] for key in ProposalResponse.model_fields}))
+                    except ApiError as exc:
+                        if exc.status not in (401, 403, 404):
+                            raise
+                        message.unavailable_proposal_count += 1
+        return {**summary, 'messages': messages, 'next_offset': offset+limit if len(rows)>limit else None}
+
+
+@router.patch('/agent/sessions/{session_id}', response_model=SessionSummary)
+async def rename_session(session_id: UUID, body: RenameSession, principal=Depends(require_principal)):
+    async with transaction(principal) as conn:
+        await owned_session(conn, principal, session_id, lock=True)
+        await conn.execute('UPDATE public.chat_sessions SET title=%s WHERE id=%s', (body.title, session_id))
+        return await session_summary(conn, principal, session_id)
+
+
+@router.delete('/agent/sessions/{session_id}', status_code=204)
+async def delete_session(session_id: UUID, principal=Depends(require_principal)):
+    async with transaction(principal) as conn:
+        await owned_session(conn, principal, session_id, lock=True)
+        active = await (await conn.execute("SELECT 1 FROM backend.agent_runs WHERE session_id=%s AND status IN('running','ambiguous')", (session_id,))).fetchone()
+        if active:
+            raise ApiError(409, 'session_busy', 'Диалог нельзя удалить, пока выполнение не завершено')
+        await conn.execute('UPDATE public.chat_sessions SET deleted_at=clock_timestamp() WHERE id=%s', (session_id,))
+        return Response(status_code=204)
+
+
 async def attachment_metadata(conn, principal, reference, ordinal):
     metadata, version = await get_version(conn, principal, reference.file_id, reference.version_id, ready=True)
     available = await (await conn.execute('SELECT EXISTS(SELECT 1 FROM backend.file_chunks WHERE version_id=%s) AS value',
@@ -201,7 +388,7 @@ async def attachment_metadata(conn, principal, reference, ordinal):
         quality=quality, text_available=available['value'])
 
 
-async def reserve(principal, session_id, message, attachments=()):
+async def reserve(principal, session_id, message, attachments=(), *, vision=False):
     settings = get_settings()
     if not settings.agent_url or len(settings.delegation_secret) < 32:
         raise ApiError(503, 'agent_unavailable', 'Агент не настроен')
@@ -211,13 +398,15 @@ async def reserve(principal, session_id, message, attachments=()):
         metadata = [await attachment_metadata(conn, principal, item, ordinal) for ordinal, item in enumerate(attachments)]
         if sum(item.byte_size for item in metadata) > MAX_ATTACHMENT_BYTES:
             raise ApiError(413, 'attachments_too_large', 'Суммарный размер вложений превышает 20 МБ')
+        if not vision and any(item.mime in IMAGE_MIMES or item.mime == 'application/pdf' and not item.text_available for item in metadata):
+            raise ApiError(412, 'agent_vision_unsupported', 'Текущая модель не читает изображения и PDF без текстового слоя')
         # Serialize admission across API workers, accounting for disconnected runs.
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext('deanery-agent-admission'))")
         active = await (await conn.execute("SELECT count(*) AS n FROM backend.agent_runs WHERE status IN ('running','ambiguous')")).fetchone()
         if active['n'] >= settings.agent_max_concurrency:
             raise ApiError(429, 'agent_busy', 'Агент занят; повторите позднее')
         if session_id:
-            found = await (await conn.execute('SELECT id FROM public.chat_sessions WHERE id=%s AND actor_id=%s',
+            found = await (await conn.execute('SELECT id FROM public.chat_sessions WHERE id=%s AND actor_id=%s AND deleted_at IS NULL',
                 (session_id, f'user:{principal.user_id}'))).fetchone()
             if not found:
                 raise ApiError(404, 'session_not_found', 'Диалог не найден')
@@ -237,17 +426,23 @@ async def reserve(principal, session_id, message, attachments=()):
     return run_id, session_id, context
 
 
-async def finish(run_id, status, answer=None):
+async def finish(run_id, status, answer=None, tools_used=None):
     async with get_pool().connection() as conn:
         owner = await (await conn.execute('SELECT user_id FROM backend.agent_runs WHERE id=%s', (run_id,))).fetchone()
         if owner:
             await conn.execute('SELECT backend.finish_agent_run(%s,%s,%s,%s)', (run_id, owner['user_id'], status, answer))
+            if tools_used is not None and status == 'done':
+                # Legacy callbacks omit metadata; the first supplied trace fills it exactly once.
+                await conn.execute("UPDATE backend.agent_runs SET tools_used=%s WHERE id=%s AND status='done' AND tools_used IS NULL",
+                    (tools_used, run_id))
 
 
 async def upstream_request(request, body, principal, stream):
-    if body.attachments and not await adapter_capabilities():
+    profile = await adapter_capabilities() if body.attachments else None
+    if profile is not None and not profile.attachments_context_v1:
         raise ApiError(412, 'agent_attachments_unsupported', 'Текущий агент ещё не поддерживает вложения')
-    run_id, session_id, context = await reserve(principal, body.session_id, body.message, body.attachments)
+    run_id, session_id, context = await reserve(principal, body.session_id, body.message, body.attachments,
+        vision=bool(profile and profile.attachments_vision_v1))
     payload = {'message': body.message, 'session_id': str(session_id)}
     if body.attachments:
         payload['attachments'] = [item.model_dump(mode='json') for item in body.attachments]
@@ -263,7 +458,7 @@ async def upstream_request(request, body, principal, stream):
             await response.aclose()
             await finish(run_id, 'failed')
             raise ApiError(503 if response.status_code == 503 else 502, 'agent_error', 'Агент не выполнил запрос',
-                {'run_id': str(run_id), 'session_id': str(session_id)} if context is not None else None)
+                {'run_id': str(run_id), 'session_id': str(session_id)})
         return run_id, session_id, response, context
     except (httpx.HTTPError, asyncio.CancelledError) as exc:
         definite = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
@@ -285,6 +480,9 @@ def check_answer(value, session_id):
         raise ApiError(502, 'agent_protocol_error', 'Неверный ответ агента') from exc
     if not isinstance(value['answer'], str) or len(value['answer']) > 100000 or not isinstance(value['proposals'], list) or not isinstance(value['tools_used'], list):
         raise ApiError(502, 'agent_protocol_error', 'Неверный ответ агента')
+    ChatResponse.model_validate(value)
+    if len(value['tools_used']) > 300:
+        raise ApiError(502, 'agent_protocol_error', 'Слишком много вызовов инструментов')
     return value
 
 
@@ -299,10 +497,13 @@ async def chat(body: ChatRequest, request: Request, principal=Depends(require_pr
                 if len(raw) > 1_048_576:
                     raise ValueError('Agent response size limit')
         result = check_answer(json.loads(raw), session_id)
-        await finish(run_id, 'done', result['answer'])
+        await finish(run_id, 'done', result['answer'], result['tools_used'])
         if context is not None:
             result['attachment_context'] = context
         return result
+    except asyncio.CancelledError:
+        await asyncio.shield(finish(run_id, 'ambiguous'))
+        raise
     except (ValueError, ApiError, TimeoutError, httpx.HTTPError):
         await finish(run_id, 'ambiguous')
         raise ApiError(502, 'agent_protocol_error', 'Неверный ответ агента',
@@ -321,7 +522,7 @@ async def chat_stream(body: ChatRequest, request: Request, principal=Depends(req
         await response.aclose()
         await finish(run_id, 'ambiguous')
         raise ApiError(502, 'agent_protocol_error', 'Неверный поток агента',
-            {'run_id': str(run_id), 'session_id': str(session_id)} if context is not None else None)
+            {'run_id': str(run_id), 'session_id': str(session_id)})
 
     async def events():
         terminal = False
@@ -347,14 +548,13 @@ async def chat_stream(body: ChatRequest, request: Request, principal=Depends(req
                             raise ValueError('SSE session')
                         if event == 'done':
                             check_answer(value, session_id)
+                            await finish(run_id, 'done', value['answer'], value['tools_used'])
                             terminal = True
-                            await finish(run_id, 'done', value['answer'])
                         if event == 'error':
                             value = {'type': 'AgentError', 'message': 'Агент не ответил'}
-                            if context is not None:
-                                value.update(run_id=str(run_id), session_id=str(session_id))
-                            terminal = True
+                            value.update(run_id=str(run_id), session_id=str(session_id))
                             await finish(run_id, 'failed')
+                            terminal = True
                         if context is not None and event in {'session', 'done'}:
                             value['attachment_context'] = context
                         yield 'event: ' + event + '\ndata: ' + json.dumps(value, ensure_ascii=False) + '\n\n'
@@ -364,7 +564,7 @@ async def chat_stream(body: ChatRequest, request: Request, principal=Depends(req
                         raise ValueError('SSE frame limit')
                 if not terminal:
                     raise ValueError('SSE incomplete')
-        except (httpx.HTTPError, TimeoutError, ValueError, ApiError):
+        except (httpx.HTTPError, TimeoutError, ValueError, ApiError, DatabaseError):
             value = {'type': 'GatewayError', 'message': 'Ответ не получен; выполнение может продолжаться',
                      'run_id': str(run_id), 'session_id': str(session_id)}
             yield 'event: error\ndata: ' + json.dumps(value, ensure_ascii=False) + '\n\n'
@@ -408,12 +608,15 @@ async def delegated(request, audience, permit_finished=False):
 @router.get('/agent/capabilities', responses={200: {'model': CapabilitiesResponse}})
 async def capabilities(principal=Depends(require_principal)):
     try:
-        supported = await adapter_capabilities()
+        profile = await adapter_capabilities()
         status = 'ready'
     except ApiError:
-        supported, status = False, 'unavailable'
+        profile, status = AdapterCapabilities(attachments_context_v1=False), 'unavailable'
+    supported = profile.attachments_context_v1
+    visual = supported and profile.attachments_vision_v1
     return CapabilitiesResponse(attachment_context=AttachmentCapability(
-        agent_supported=supported, agent_status=status))
+        agent_supported=supported, agent_status=status, vision_supported=visual, model=profile.model,
+        accepted_mime_types=(TEXT_MIMES + (IMAGE_MIMES if visual else [])) if supported else []))
 
 
 async def run_attachment_context(conn, principal, run_id):
@@ -514,6 +717,7 @@ class Completion(BaseModel):
     model_config = ConfigDict(extra='forbid')
     status: Literal['done', 'failed']
     answer: str | None = Field(default=None, max_length=100000)
+    tools_used: list[AgentToolName] | None = Field(default=None, max_length=300)
 
 
 @router.post('/internal/agent/complete', include_in_schema=False)
@@ -521,7 +725,7 @@ async def complete(body: Completion, request: Request):
     claims, _ = await delegated(request, 'deanery-complete', permit_finished=True)
     if (body.status == 'done') != (body.answer is not None):
         raise ApiError(422, 'invalid_completion', 'Ответ не соответствует результату запуска')
-    await finish(UUID(claims['run']), body.status, body.answer)
+    await finish(UUID(claims['run']), body.status, body.answer, body.tools_used)
     return {'accepted': True}
 
 

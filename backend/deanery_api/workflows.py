@@ -4,7 +4,7 @@ import json
 import uuid
 from datetime import date,datetime,time,timedelta,timezone
 from typing import Literal,Union
-from fastapi import APIRouter,Depends,Header,Request
+from fastapi import APIRouter,Depends,Header,Query,Request
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel,ConfigDict,Field,ValidationError,StrictInt,StrictBool,model_validator,create_model
 from .auth import require_principal,authorise,hasher,verify_password
@@ -248,6 +248,13 @@ class ScheduledStatus(Command):
     result: EnrollmentResult | StudentOrderResult | None
 
 
+class ScheduledList(Command):
+    items: list[ScheduledStatus]
+    limit: int
+    offset: int
+    has_more: bool
+
+
 async def one(conn,query,params=()):
     return await(await conn.execute(query,params)).fetchone()
 
@@ -369,15 +376,29 @@ def register(name,model):
 for _name,_model in command_models.items(): register(_name,_model)
 
 
-@router.get('/scheduled/{event_id}',responses={200:{'model':ScheduledStatus}})
-async def scheduled_status(event_id:uuid.UUID,request:Request,principal=Depends(require_principal)):
-    async with transaction(principal,request.state.request_id,readonly=True) as conn:
-        result=await one(conn,"""SELECT e.id,j.id AS job_id,e.name,o.effective_date,
+SCHEDULED_SELECT = """SELECT e.id,j.id AS job_id,e.name,o.effective_date,e.created_at,
  CASE WHEN e.cancelled_at IS NOT NULL THEN 'cancelled' WHEN os.applied_at IS NOT NULL THEN 'applied' ELSE 'pending' END AS status,
  CASE WHEN os.applied_at IS NOT NULL THEN jsonb_build_object('student_id',e.student_id,'order_id',e.order_id,'effective_date',o.effective_date) END AS result
  FROM backend.domain_events e LEFT JOIN deanery.academic_order o ON o.order_id=e.order_id
  LEFT JOIN deanery.order_student os ON os.order_id=e.order_id AND os.student_id=e.student_id
  LEFT JOIN backend.jobs j ON j.owner_id=e.user_id AND j.kind='apply_workflow' AND j.idempotency_key='domain:'||e.id::text
- WHERE e.id=%s AND e.user_id=%s""",(event_id,principal.user_id))
+ WHERE e.user_id=%s"""
+
+
+@router.get('/scheduled', response_model=ScheduledList)
+async def scheduled_list(request:Request, limit:int=Query(30,ge=1,le=100), offset:int=Query(0,ge=0,le=100000),
+                         status:Literal['pending','applied','cancelled']|None=None,principal=Depends(require_principal)):
+    async with transaction(principal,request.state.request_id,readonly=True) as conn:
+        rows=await(await conn.execute('SELECT id,job_id,name,effective_date,status,result FROM ('+SCHEDULED_SELECT+
+            ') scheduled WHERE (%s::text IS NULL OR status=%s) ORDER BY created_at DESC,id DESC LIMIT %s OFFSET %s',
+            (principal.user_id,status,status,limit+1,offset))).fetchall()
+        return {'items':json_value(rows[:limit]),'limit':limit,'offset':offset,'has_more':len(rows)>limit}
+
+
+@router.get('/scheduled/{event_id}',responses={200:{'model':ScheduledStatus}})
+async def scheduled_status(event_id:uuid.UUID,request:Request,principal=Depends(require_principal)):
+    async with transaction(principal,request.state.request_id,readonly=True) as conn:
+        result=await one(conn,'SELECT id,job_id,name,effective_date,status,result FROM ('+SCHEDULED_SELECT+
+            ') scheduled WHERE id=%s',(principal.user_id,event_id))
         if not result: raise ApiError(404,'not_found','Scheduled command not found')
         return json_value(result)

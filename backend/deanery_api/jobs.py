@@ -1,9 +1,10 @@
 """Transactional Procrastinate enqueue and user-visible job state."""
+import asyncio
 from uuid import UUID, uuid4
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Query
 from pydantic import BaseModel, Field, ConfigDict
 from psycopg.types.json import Jsonb
 import procrastinate
@@ -25,6 +26,7 @@ class ParseQuality(BaseModel):
     images_not_extracted: bool
     text_verified: Literal[False]
     incomplete_extraction: bool
+    text_available: bool | None = None
 
 
 class FileResult(BaseModel):
@@ -34,7 +36,7 @@ class FileResult(BaseModel):
 
 
 class ProcessFileResult(FileResult):
-    chunks: int = Field(ge=1)
+    chunks: int = Field(ge=0)
     quality: ParseQuality
 
 
@@ -54,6 +56,14 @@ class JobResponse(BaseModel):
     progress: int = Field(ge=0, le=100)
     result: ProcessFileResult | FileResult | ReconcileResult | ScheduledWorkflowResult | None
     error_code: str | None
+
+
+class JobListResponse(BaseModel):
+    items: list[JobResponse]
+    limit: int
+    offset: int
+    next_offset: int | None
+    has_more: bool
 
 
 def queue_app():
@@ -110,6 +120,35 @@ async def owned_job(conn, principal, job_id, lock=False):
         from .files import get_file
         await get_file(conn, principal, UUID(row['payload']['file_id']))
     return row
+
+
+@router.get('/jobs', response_model=JobListResponse,
+    description='Own jobs only, including for administrators. Follow next_offset while has_more; an empty page can continue after revoked file access.')
+async def list_jobs(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0, le=1000000),
+                    kind: Literal['process_file', 'export_report', 'reconcile', 'apply_workflow'] | None = None,
+                    status: Literal['queued', 'running', 'succeeded', 'failed'] | None = None,
+                    principal=Depends(require_principal)):
+    items, consumed = [], 0
+    try:
+        async with asyncio.timeout(10):
+            async with transaction(principal, readonly=True) as conn:
+                candidates = await (await conn.execute('''SELECT id FROM backend.jobs WHERE owner_id=%s
+                    AND (%s::text IS NULL OR kind=%s) AND (%s::text IS NULL OR status=%s)
+                    ORDER BY created_at DESC,id DESC LIMIT 251 OFFSET %s''', (principal.user_id, kind, kind, status, status, offset))).fetchall()
+                for candidate in candidates[:250]:
+                    consumed += 1
+                    try:
+                        items.append(public_job(await owned_job(conn, principal, candidate['id'])))
+                    except ApiError as error:
+                        if error.status in (403, 404):
+                            continue
+                        raise
+                    if len(items) == limit:
+                        break
+    except TimeoutError:
+        raise ApiError(503, 'catalog_timeout', 'Каталог не успел проверить права; сузьте фильтры') from None
+    more = consumed < len(candidates)
+    return {'items': items, 'limit': limit, 'offset': offset, 'next_offset': offset+consumed if more else None, 'has_more': more}
 
 
 @router.get('/jobs/{job_id}', responses={200: {'model': JobResponse}})

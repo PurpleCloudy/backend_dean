@@ -68,6 +68,7 @@ for name in ('person','contact_person'):
     resources[name]['operation_roles']['create']=['admin']
     resources[name]['description']+=' Standalone creation: administrator only; deanery staff use enrollment or atomic student-contact command.'
 resources['student_contact']['operations'].append('workflow')
+resources['document_request']['operation_roles']['update']=staff
 resources['student_contact']['operation_roles']['workflow']=staff
 resources['student_contact']['workflow_only'].append('create_student_contact')
 resources['person']['private_read_fields']=['person_id','passport_series','passport_number','snils','inn','address','birth_date','phone','email']

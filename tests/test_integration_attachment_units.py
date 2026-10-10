@@ -71,7 +71,7 @@ def test_signed_capability_contract(monkeypatch, body, expected):
                     await gateway.adapter_capabilities()
                 assert error.value.status == 503 and error.value.code == 'agent_unavailable'
             else:
-                assert await gateway.adapter_capabilities() is expected
+                assert (await gateway.adapter_capabilities()).attachments_context_v1 is expected
     asyncio.run(check())
 
 
@@ -93,7 +93,7 @@ def test_capability_response_is_bounded_and_failclosed(monkeypatch, failure):
 
 @pytest.mark.parametrize('stream', [False, True])
 def test_unsupported_agent_rejects_before_admission(monkeypatch, stream):
-    monkeypatch.setattr(gateway, 'adapter_capabilities', AsyncMock(return_value=False))
+    monkeypatch.setattr(gateway, 'adapter_capabilities', AsyncMock(return_value=gateway.AdapterCapabilities(attachments_context_v1=False)))
     reserve = AsyncMock()
     monkeypatch.setattr(gateway, 'reserve', reserve)
     body = gateway.ChatRequest(message='Document', attachments=[{'file_id': uuid4(), 'version_id': uuid4()}])
@@ -201,7 +201,7 @@ def test_attached_http_error_exposes_admitted_backend_handle(monkeypatch):
     async def check():
         backend_id, session_id = uuid4(), uuid4()
         monkeypatch.setattr(gateway, 'get_settings', lambda: SETTINGS)
-        monkeypatch.setattr(gateway, 'adapter_capabilities', AsyncMock(return_value=True))
+        monkeypatch.setattr(gateway, 'adapter_capabilities', AsyncMock(return_value=gateway.AdapterCapabilities(attachments_context_v1=True)))
         monkeypatch.setattr(gateway, 'reserve', AsyncMock(return_value=(backend_id, session_id, {'backend_run_id': str(backend_id)})))
         monkeypatch.setattr(gateway, 'finish', AsyncMock())
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(500))) as client:
